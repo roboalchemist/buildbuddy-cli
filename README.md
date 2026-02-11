@@ -1,10 +1,21 @@
 # buildbuddy-cli
 
+[![CI](https://github.com/roboalchemist/buildbuddy-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/roboalchemist/buildbuddy-cli/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/roboalchemist/buildbuddy-cli)](https://goreportcard.com/report/github.com/roboalchemist/buildbuddy-cli)
+[![GoDoc](https://pkg.go.dev/badge/github.com/roboalchemist/buildbuddy-cli)](https://pkg.go.dev/github.com/roboalchemist/buildbuddy-cli)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Go CLI for the [BuildBuddy Enterprise API](https://www.buildbuddy.io/docs/enterprise-api). Query build invocations, targets, logs, actions, and artifacts from the command line.
 
 Built for both humans and AI agents.
 
 ## Installation
+
+```bash
+go install github.com/roboalchemist/buildbuddy-cli@latest
+```
+
+Or via Homebrew:
 
 ```bash
 brew tap roboalchemist/tap
