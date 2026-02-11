@@ -25,6 +25,7 @@ brews:
     repository:
       owner: roboalchemist
       name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
     directory: Formula
     homepage: "https://github.com/roboalchemist/buildbuddy-cli"
     description: "CLI for the BuildBuddy Enterprise API"
