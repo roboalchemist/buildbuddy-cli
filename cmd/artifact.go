@@ -102,7 +102,7 @@ func runArtifactList(cmd *cobra.Command, args []string) error {
 			td.Rows = append(td.Rows, []string{
 				truncateStr(f.TargetLabel, 50),
 				f.Name,
-				humanSize(f.SizeBytes),
+				output.HumanSize(f.SizeBytes),
 				truncateStr(f.URI, 60),
 			})
 		}
@@ -137,7 +137,7 @@ func runArtifactGet(cmd *cobra.Command, args []string) error {
 				td.Rows = append(td.Rows, []string{
 					truncateStr(f.TargetLabel, 50),
 					f.Name,
-					humanSize(f.SizeBytes),
+					output.HumanSize(f.SizeBytes),
 					truncateStr(f.URI, 60),
 				})
 			}
@@ -176,9 +176,9 @@ func runArtifactGet(cmd *cobra.Command, args []string) error {
 		}
 
 		totalBytes += int64(len(resp.Data))
-		fmt.Fprintf(os.Stderr, "  %s (%s)\n", f.Name, humanSize(int64(len(resp.Data))))
+		fmt.Fprintf(os.Stderr, "  %s (%s)\n", f.Name, output.HumanSize(int64(len(resp.Data))))
 	}
 
-	fmt.Fprintf(os.Stderr, "Wrote %d artifacts to %s (%s total)\n", len(files), flagArtifactDir, humanSize(totalBytes))
+	fmt.Fprintf(os.Stderr, "Wrote %d artifacts to %s (%s total)\n", len(files), flagArtifactDir, output.HumanSize(totalBytes))
 	return nil
 }

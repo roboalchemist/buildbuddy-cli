@@ -56,7 +56,7 @@ func runFileGet(cmd *cobra.Command, args []string) error {
 		if err := os.WriteFile(opts.OutputFile, resp.Data, 0o644); err != nil {
 			return output.NewInternalError(fmt.Sprintf("write file: %v", err))
 		}
-		fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, humanSize(int64(len(resp.Data))))
+		fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, output.HumanSize(int64(len(resp.Data))))
 		return nil
 	}
 
@@ -98,20 +98,6 @@ func runFileDelete(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Deleted: %s\n", uri)
 	return nil
-}
-
-// humanSize formats bytes as human-readable (duplicated for cmd package access)
-func humanSize(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%dB", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 type byteReader struct {

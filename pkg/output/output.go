@@ -68,7 +68,7 @@ func Render(data interface{}, opts Options) error {
 			_ = f.Close()
 			info, _ := f.Stat()
 			if info != nil {
-				fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, humanSize(info.Size()))
+				fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, HumanSize(info.Size()))
 			}
 		}()
 	}
@@ -96,7 +96,7 @@ func RenderTable(td TableData, data interface{}, opts Options) error {
 			_ = f.Close()
 			info, _ := f.Stat()
 			if info != nil {
-				fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, humanSize(info.Size()))
+				fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, HumanSize(info.Size()))
 			}
 		}()
 	}
@@ -125,7 +125,7 @@ func RenderStream(r io.Reader, opts Options) error {
 			_ = f.Close()
 			info, _ := f.Stat()
 			if info != nil {
-				fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, humanSize(info.Size()))
+				fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, HumanSize(info.Size()))
 			}
 		}()
 	}
@@ -262,7 +262,8 @@ func ShouldColor(opts Options) bool {
 	return DetectTTY()
 }
 
-func humanSize(b int64) string {
+// HumanSize formats bytes as human-readable (e.g., "1.5MB").
+func HumanSize(b int64) string {
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%dB", b)

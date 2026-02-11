@@ -140,10 +140,11 @@ buildbuddy-cli workflow run "Build" --repo https://github.com/org/repo --branch 
 
 | Flag | Description |
 |------|-------------|
-| `--repo` | Pushed repository URL |
-| `--branch` | Pushed branch name |
-| `--target-repo` | Target repository URL |
-| `--target-branch` | Target branch name |
+| `--repo` | Repository URL |
+| `--branch` | Branch name |
+| `--commit` | Commit SHA |
+| `--visibility` | Visibility (e.g., PUBLIC) |
+| `--async` | Run asynchronously |
 
 ## Global Flags
 

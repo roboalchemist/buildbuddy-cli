@@ -3,7 +3,6 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -1130,5 +1129,3 @@ func keys(m map[string]interface{}) []string {
 	return ks
 }
 
-// Ensure fmt is used (needed for some error formatting above).
-var _ = fmt.Sprintf

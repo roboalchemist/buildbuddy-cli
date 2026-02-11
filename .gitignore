@@ -1,6 +1,10 @@
 buildbuddy-cli
 dist/
 *.log
+*.test
+*.exe
+*.prof
+coverage.out
 .DS_Store
 .env
 .idea/
