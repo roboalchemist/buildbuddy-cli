@@ -1,0 +1,32 @@
+version: 2
+
+builds:
+  - binary: buildbuddy-cli
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Version}} -X github.com/roboalchemist/buildbuddy-cli/pkg/api.version={{.Version}}
+
+archives:
+  - format: tar.gz
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+
+checksum:
+  name_template: "checksums.txt"
+
+brews:
+  - name: buildbuddy-cli
+    repository:
+      owner: roboalchemist
+      name: homebrew-tap
+    directory: Formula
+    homepage: "https://github.com/roboalchemist/buildbuddy-cli"
+    description: "CLI for the BuildBuddy Enterprise API"
+    install: |
+      bin.install "buildbuddy-cli"
