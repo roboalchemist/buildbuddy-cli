@@ -102,7 +102,7 @@ func runArtifactList(cmd *cobra.Command, args []string) error {
 			td.Rows = append(td.Rows, []string{
 				truncateStr(f.TargetLabel, 50),
 				f.Name,
-				output.HumanSize(f.SizeBytes),
+				humanSize(f.SizeBytes),
 				truncateStr(f.URI, 60),
 			})
 		}
@@ -137,7 +137,7 @@ func runArtifactGet(cmd *cobra.Command, args []string) error {
 				td.Rows = append(td.Rows, []string{
 					truncateStr(f.TargetLabel, 50),
 					f.Name,
-					output.HumanSize(f.SizeBytes),
+					humanSize(f.SizeBytes),
 					truncateStr(f.URI, 60),
 				})
 			}
@@ -157,9 +157,8 @@ func runArtifactGet(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		req := api.GetFileRequest{URI: f.URI}
-		var resp api.GetFileResponse
-		if err := client.Call("GetFile", req, &resp); err != nil {
+		data, err := callGetFileRaw(client, f.URI)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to download %s: %v\n", f.Name, err)
 			continue
 		}
@@ -170,15 +169,15 @@ func runArtifactGet(cmd *cobra.Command, args []string) error {
 			continue
 		}
 
-		if err := os.WriteFile(dest, resp.Data, 0o644); err != nil {
+		if err := os.WriteFile(dest, data, 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to write %s: %v\n", f.Name, err)
 			continue
 		}
 
-		totalBytes += int64(len(resp.Data))
-		fmt.Fprintf(os.Stderr, "  %s (%s)\n", f.Name, output.HumanSize(int64(len(resp.Data))))
+		totalBytes += int64(len(data))
+		fmt.Fprintf(os.Stderr, "  %s (%s)\n", f.Name, humanSize(int64(len(data))))
 	}
 
-	fmt.Fprintf(os.Stderr, "Wrote %d artifacts to %s (%s total)\n", len(files), flagArtifactDir, output.HumanSize(totalBytes))
+	fmt.Fprintf(os.Stderr, "Wrote %d artifacts to %s (%s total)\n", len(files), flagArtifactDir, humanSize(totalBytes))
 	return nil
 }

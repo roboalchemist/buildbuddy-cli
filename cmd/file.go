@@ -10,6 +10,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// callGetFileRaw fetches a bytestream URI and returns the raw bytes.
+// GetFile returns raw bytes (not JSON), so we use CallRaw to avoid JSON decode errors.
+func callGetFileRaw(client *api.Client, uri string) ([]byte, error) {
+	req := api.GetFileRequest{URI: uri}
+	body, err := client.CallRaw("GetFile", req)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = body.Close() }()
+	return io.ReadAll(body)
+}
+
 var fileCmd = &cobra.Command{
 	Use:   "file",
 	Short: "Manage cached files",
@@ -42,10 +54,9 @@ func runFileGet(cmd *cobra.Command, args []string) error {
 	}
 
 	uri := args[0]
-	req := api.GetFileRequest{URI: uri}
 
-	var resp api.GetFileResponse
-	if err := client.Call("GetFile", req, &resp); err != nil {
+	data, err := callGetFileRaw(client, uri)
+	if err != nil {
 		return output.NewAPIError(fmt.Sprintf("GetFile: %v", err))
 	}
 
@@ -53,10 +64,10 @@ func runFileGet(cmd *cobra.Command, args []string) error {
 
 	// If output file specified, write binary data to file
 	if opts.OutputFile != "" {
-		if err := os.WriteFile(opts.OutputFile, resp.Data, 0o644); err != nil {
+		if err := os.WriteFile(opts.OutputFile, data, 0o644); err != nil {
 			return output.NewInternalError(fmt.Sprintf("write file: %v", err))
 		}
-		fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, output.HumanSize(int64(len(resp.Data))))
+		fmt.Fprintf(os.Stderr, "Wrote %s (%s)\n", opts.OutputFile, humanSize(int64(len(data))))
 		return nil
 	}
 
@@ -64,12 +75,12 @@ func runFileGet(cmd *cobra.Command, args []string) error {
 	if opts.Mode == output.ModeJSON {
 		return output.Render(map[string]interface{}{
 			"uri":  uri,
-			"size": len(resp.Data),
+			"size": len(data),
 		}, opts)
 	}
 
 	_, err = io.Copy(os.Stdout, io.LimitReader(
-		&byteReader{data: resp.Data, pos: 0}, int64(len(resp.Data)),
+		&byteReader{data: data, pos: 0}, int64(len(data)),
 	))
 	return err
 }
@@ -98,6 +109,20 @@ func runFileDelete(cmd *cobra.Command, args []string) error {
 
 	fmt.Fprintf(os.Stderr, "Deleted: %s\n", uri)
 	return nil
+}
+
+// humanSize formats bytes as human-readable (duplicated for cmd package access)
+func humanSize(b int64) string {
+	const unit = 1024
+	if b < unit {
+		return fmt.Sprintf("%dB", b)
+	}
+	div, exp := int64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 type byteReader struct {

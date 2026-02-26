@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 
 	"github.com/roboalchemist/buildbuddy-cli/pkg/output"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // appVersion is set from main via SetVersion.
@@ -117,6 +119,67 @@ func DebugLog(format string, args ...interface{}) {
 	if flagDebug {
 		fmt.Fprintf(os.Stderr, "[debug] "+format+"\n", args...)
 	}
+}
+
+func setupProgressiveHelp() {
+	defaultHelp := rootCmd.HelpFunc()
+	rootCmd.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		if !flagJSON {
+			defaultHelp(cmd, args)
+			return
+		}
+		helpJSON := buildHelpJSON(cmd)
+		out, _ := json.MarshalIndent(helpJSON, "", "  ")
+		fmt.Fprintln(os.Stdout, string(out))
+	})
+}
+
+type helpCommand struct {
+	Name        string        `json:"name"`
+	Description string        `json:"description"`
+	Flags       []helpFlag    `json:"flags,omitempty"`
+	Commands    []helpCommand `json:"commands,omitempty"`
+}
+
+type helpFlag struct {
+	Name    string `json:"name"`
+	Short   string `json:"short,omitempty"`
+	Type    string `json:"type"`
+	Default string `json:"default,omitempty"`
+	Usage   string `json:"usage"`
+}
+
+func buildHelpJSON(cmd *cobra.Command) helpCommand {
+	h := helpCommand{
+		Name:        cmd.Name(),
+		Description: cmd.Short,
+	}
+
+	cmd.LocalFlags().VisitAll(func(f *pflag.Flag) {
+		hf := helpFlag{
+			Name:  "--" + f.Name,
+			Type:  f.Value.Type(),
+			Usage: f.Usage,
+		}
+		if f.Shorthand != "" {
+			hf.Short = "-" + f.Shorthand
+		}
+		if f.DefValue != "" && f.DefValue != "false" && f.DefValue != "0" {
+			hf.Default = f.DefValue
+		}
+		h.Flags = append(h.Flags, hf)
+	})
+
+	for _, sub := range cmd.Commands() {
+		if sub.IsAvailableCommand() {
+			h.Commands = append(h.Commands, helpCommand{
+				Name:        sub.Name(),
+				Description: sub.Short,
+			})
+		}
+	}
+
+	return h
 }
 
 // SetVersion sets the version string for the root command.

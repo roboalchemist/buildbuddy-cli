@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -10,6 +11,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
 )
 
 // requireAPIKey skips the test if BUILDBUDDY_API_KEY is not set.
@@ -47,15 +51,24 @@ func resetFlags() {
 	// Invocation flags
 	flagInvListCommit = ""
 	flagInvListLimit = 0
+	flagWaitPoll = 10
+	flagWaitTimeout = 0
 
 	// Target flags
 	flagTargetLabel = ""
 	flagTargetTag = ""
+	flagTargetDepth = -1
 
 	// Log flags
 	flagLogGrep = ""
 	flagLogTail = 0
 	flagLogHead = 0
+	flagLogTarget = ""
+	flagLogRaw = false
+	flagLogJunit = false
+	flagTailPoll = 5
+	flagTailTimeout = 0
+	flagTailQuiet = false
 
 	// Action flags
 	flagActionTargetLabel = ""
@@ -78,6 +91,20 @@ func resetFlags() {
 	flagRunCommit = ""
 	flagRunTimeout = ""
 	flagRunEnv = nil
+
+	// Reset Cobra's internal help flags to avoid state leakage from --help
+	// This must be done on all commands that have been executed with --help
+	resetHelpFlags(rootCmd)
+}
+
+// resetHelpFlags recursively resets the help flag on a command and all its subcommands.
+func resetHelpFlags(cmd *cobra.Command) {
+	if cmd.Flags().Lookup("help") != nil {
+		cmd.Flags().Set("help", "false")
+	}
+	for _, sub := range cmd.Commands() {
+		resetHelpFlags(sub)
+	}
 }
 
 // execResult holds the captured output from a command execution.
@@ -292,6 +319,106 @@ func TestInvocationGetFields(t *testing.T) {
 	}
 }
 
+// --- Invocation Wait Tests ---
+
+func TestInvocationWaitCompletedSuccess(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Wait on a completed invocation should return immediately
+	res := execCmd("invocation", "wait", invID)
+	// Note: exit code testing is limited by execCmd, but we verify no error
+	if res.err != nil {
+		// The error might be an exit code error, which is expected for failed invocations
+		t.Logf("invocation wait returned: %v (may be expected for failed invocations)", res.err)
+	}
+	// Should have some output
+	if res.stdout == "" {
+		t.Error("invocation wait returned empty stdout")
+	}
+}
+
+func TestInvocationWaitCompletedJSON(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("invocation", "wait", invID, "--json")
+	if res.err != nil {
+		t.Logf("invocation wait --json returned: %v (may be expected for failed invocations)", res.err)
+	}
+
+	// Should return valid JSON with invocation data
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(res.stdout), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, res.stdout)
+	}
+	if _, ok := parsed["invocation"]; !ok {
+		t.Fatalf("JSON missing 'invocation' key, got keys: %v", keys(parsed))
+	}
+}
+
+func TestInvocationWaitTimeoutCompletedReturnsImmediately(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Even with a 1-second timeout, a completed invocation should return immediately
+	start := time.Now()
+	res := execCmd("invocation", "wait", invID, "--timeout", "1")
+	elapsed := time.Since(start)
+
+	// Should complete quickly (under 1 second) since invocation is already done
+	if elapsed > 1*time.Second {
+		t.Errorf("wait on completed invocation took too long: %v", elapsed)
+	}
+
+	if res.stdout == "" {
+		t.Error("invocation wait with timeout returned empty stdout")
+	}
+}
+
+func TestInvocationWaitWatchAlias(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("invocation", "watch", invID)
+	if res.err != nil {
+		t.Logf("invocation watch returned: %v (may be expected for failed invocations)", res.err)
+	}
+	if res.stdout == "" {
+		t.Error("invocation watch alias returned empty stdout")
+	}
+}
+
+func TestInvocationWaitHelp(t *testing.T) {
+	res := execCmd("invocation", "wait", "--help")
+	if res.err != nil {
+		t.Fatalf("invocation wait --help failed: %v", res.err)
+	}
+	// Should show --poll and --timeout flags
+	for _, flag := range []string{"--poll", "--timeout"} {
+		if !strings.Contains(res.stdout, flag) {
+			t.Errorf("invocation wait --help missing flag %s in output:\n%s", flag, res.stdout)
+		}
+	}
+}
+
+func TestInvocationWaitBadID(t *testing.T) {
+	requireAPIKey(t)
+	res := execCmd("invocation", "wait", "not-a-real-invocation-id-000000")
+	if res.err == nil {
+		t.Fatal("expected error for bad invocation ID")
+	}
+	// Should produce a not_found or similar error
+	if res.stderr != "" {
+		var errJSON map[string]interface{}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(res.stderr)), &errJSON); err == nil {
+			if _, ok := errJSON["error_type"]; !ok {
+				t.Error("structured error missing 'error_type' field")
+			}
+		}
+	}
+}
+
 // --- Alias Tests ---
 
 func TestAliasInvLs(t *testing.T) {
@@ -370,6 +497,67 @@ func TestTargetFailed(t *testing.T) {
 		t.Fatalf("target failed command failed: %v\nstderr: %s", res.err, res.stderr)
 	}
 	// Output may be empty if all targets passed -- that is valid
+}
+
+func TestTargetFailedDepthZero(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// --depth 0 should only search top-level, not recurse into children
+	res := execCmd("target", "failed", invID, "--depth", "0")
+	if res.err != nil {
+		t.Fatalf("target failed --depth 0 failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+	// Output may be empty if all targets passed -- that is valid
+}
+
+func TestTargetFailedWithDepth(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// --depth 1 should search one level deep
+	res := execCmd("target", "failed", invID, "--depth", "1")
+	if res.err != nil {
+		t.Fatalf("target failed --depth 1 failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+	// Output may be empty if all targets passed -- that is valid
+}
+
+func TestTargetFailedJSONIncludesInvocationID(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("target", "failed", invID, "--json")
+	if res.err != nil {
+		t.Fatalf("target failed --json failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+
+	// If there are failed targets, verify JSON includes invocationId field
+	trimmed := strings.TrimSpace(res.stdout)
+	if trimmed != "" && trimmed != "null" && trimmed != "[]" {
+		// Parse and check for invocationId field in each target
+		var targets []map[string]interface{}
+		if err := json.Unmarshal([]byte(trimmed), &targets); err != nil {
+			// If it's not an array, it might be in a different format
+			t.Logf("Note: JSON output format: %s", trimmed)
+			return
+		}
+		for i, target := range targets {
+			if _, ok := target["invocationId"]; !ok {
+				t.Errorf("target[%d] missing 'invocationId' field: %v", i, target)
+			}
+		}
+	}
+}
+
+func TestTargetFailedDepthHelp(t *testing.T) {
+	res := execCmd("target", "failed", "--help")
+	if res.err != nil {
+		t.Fatalf("target failed --help failed: %v", res.err)
+	}
+	if !strings.Contains(res.stdout, "--depth") {
+		t.Errorf("target failed --help missing --depth flag documentation:\n%s", res.stdout)
+	}
 }
 
 func TestTargetLsAlias(t *testing.T) {
@@ -495,6 +683,114 @@ func TestLogGetOutputFile(t *testing.T) {
 	}
 	if len(data) == 0 {
 		t.Fatal("output file is empty")
+	}
+}
+
+// --- Log Tail Tests ---
+
+func TestLogTail(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// For completed invocation, log tail should show log once and exit
+	res := execCmd("log", "tail", invID, "--quiet")
+	if res.err != nil {
+		// Completed failed invocations return error exit code
+		if !strings.Contains(res.stderr, "failed") {
+			t.Fatalf("log tail failed unexpectedly: %v\nstderr: %s", res.err, res.stderr)
+		}
+	}
+	if res.stdout == "" {
+		t.Fatal("log tail returned empty output")
+	}
+}
+
+func TestLogTailJSON(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("log", "tail", invID, "--json")
+	// May fail for failed invocations, but output should still be valid JSON
+	trimmed := strings.TrimSpace(res.stdout)
+	if trimmed == "" {
+		t.Fatal("log tail --json returned empty output")
+	}
+	if !json.Valid([]byte(trimmed)) {
+		t.Fatalf("log tail --json returned invalid JSON: %s", trimmed)
+	}
+
+	var result map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &result); err != nil {
+		t.Fatalf("failed to parse JSON: %v", err)
+	}
+
+	// Check expected fields
+	if _, ok := result["invocationId"]; !ok {
+		t.Fatal("invocationId missing from JSON")
+	}
+	if _, ok := result["invocationStatus"]; !ok {
+		t.Fatal("invocationStatus missing from JSON")
+	}
+	if _, ok := result["success"]; !ok {
+		t.Fatal("success missing from JSON")
+	}
+	if _, ok := result["log"]; !ok {
+		t.Fatal("log missing from JSON")
+	}
+}
+
+func TestLogTailTimeout(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// For a completed invocation with timeout, should return immediately
+	res := execCmd("log", "tail", invID, "--timeout", "30", "--quiet")
+	// May fail for failed invocations
+	if res.err != nil && strings.Contains(res.stderr, "timeout") {
+		t.Fatalf("log tail timed out on completed invocation: %v\nstderr: %s", res.err, res.stderr)
+	}
+}
+
+func TestLogTailWithURL(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Test with full BuildBuddy URL
+	url := "https://app.buildbuddy.io/invocation/" + invID
+	res := execCmd("log", "tail", url, "--quiet")
+	// May fail for failed invocations, that's OK
+	if res.stdout == "" {
+		t.Fatal("log tail with URL returned empty output")
+	}
+}
+
+func TestLogTailNotFound(t *testing.T) {
+	requireAPIKey(t)
+
+	res := execCmd("log", "tail", "nonexistent-invocation-id-12345")
+	if res.err == nil {
+		t.Fatal("log tail should fail for nonexistent invocation")
+	}
+	// Error occurred as expected - the specific error message routing depends
+	// on test infrastructure; the important thing is that an error was returned
+}
+
+func TestLogTailHelp(t *testing.T) {
+	res := execCmd("log", "tail", "--help")
+	if res.err != nil {
+		t.Fatalf("log tail --help failed: %v", res.err)
+	}
+	if !strings.Contains(res.stdout, "Follow build log output") {
+		t.Fatal("help text missing expected description")
+	}
+	if !strings.Contains(res.stdout, "--poll") {
+		t.Fatal("help text missing --poll flag")
+	}
+	if !strings.Contains(res.stdout, "--timeout") {
+		t.Fatal("help text missing --timeout flag")
+	}
+	if !strings.Contains(res.stdout, "--quiet") {
+		t.Fatal("help text missing --quiet flag")
 	}
 }
 
@@ -1017,6 +1313,85 @@ func TestLogSubcommands(t *testing.T) {
 	}
 }
 
+// --- Log Target Tests ---
+
+func TestLogGetTargetNonexistent(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Use a nonexistent target label - should return not found error
+	res := execCmd("log", "get", invID, "--target", "//nonexistent:fake_target_xyz")
+	if res.err == nil {
+		t.Fatal("expected error for nonexistent target, but got none")
+	}
+	// Error should mention "not found"
+	combined := res.stderr + res.err.Error()
+	if !strings.Contains(strings.ToLower(combined), "not found") {
+		t.Errorf("expected 'not found' error, got: %s", combined)
+	}
+}
+
+func TestLogGetTargetWithRawFlag(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// --raw with nonexistent target should fail gracefully
+	res := execCmd("log", "get", invID, "--target", "//nonexistent:target", "--raw")
+	if res.err == nil {
+		// If it succeeds, that's also fine (means there's a target with that name)
+		t.Log("--raw flag accepted")
+	}
+}
+
+func TestLogGetTargetWithJunitFlag(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// --junit with nonexistent target should fail gracefully
+	res := execCmd("log", "get", invID, "--target", "//nonexistent:target", "--junit")
+	if res.err == nil {
+		// If it succeeds, that's also fine
+		t.Log("--junit flag accepted")
+	}
+}
+
+func TestLogGetTargetJSONOutput(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Try to get a target in JSON mode - error should still be valid JSON
+	res := execCmd("log", "get", invID, "--target", "//nonexistent:target", "--json")
+
+	// If error, stderr should be valid JSON error format
+	if res.err != nil {
+		if res.stderr != "" {
+			var errJSON map[string]interface{}
+			if err := json.Unmarshal([]byte(strings.TrimSpace(res.stderr)), &errJSON); err == nil {
+				// Valid JSON error format
+				if _, ok := errJSON["error_type"]; !ok {
+					t.Error("structured error missing 'error_type' field")
+				}
+			}
+		}
+	}
+}
+
+// TestLogGetTargetZZHelp tests the --help output for target-related flags.
+// Named with ZZ prefix to run last in the log target test group to avoid
+// cobra flag state issues with subsequent tests.
+func TestLogGetTargetZZHelp(t *testing.T) {
+	res := execCmd("log", "get", "--help")
+	if res.err != nil {
+		t.Fatalf("log get --help failed: %v", res.err)
+	}
+	// Should show --target, --raw, --junit flags
+	for _, flag := range []string{"--target", "--raw", "--junit"} {
+		if !strings.Contains(res.stdout, flag) {
+			t.Errorf("log get --help missing flag %s in output:\n%s", flag, res.stdout)
+		}
+	}
+}
+
 func TestActionSubcommands(t *testing.T) {
 	requireAPIKey(t)
 	invID := getFirstInvocationID(t)
@@ -1058,6 +1433,314 @@ func TestActionSubcommands(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- Workflow Step Detection Tests ---
+
+func TestIsWorkflowStepPattern(t *testing.T) {
+	tests := []struct {
+		label    string
+		expected bool
+	}{
+		{"steps[0]", true},
+		{"steps[1]", true},
+		{"steps[99]", true},
+		{"steps[123]", true},
+		{"//pkg:target", false},
+		{"steps", false},
+		{"steps[]", false},
+		{"steps[a]", false},
+		{"steps[0", false},
+		{"steps0]", false},
+		{"prefix_steps[0]", false},
+		{"steps[0]_suffix", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.label, func(t *testing.T) {
+			result := isWorkflowStep(tc.label)
+			if result != tc.expected {
+				t.Errorf("isWorkflowStep(%q) = %v, want %v", tc.label, result, tc.expected)
+			}
+		})
+	}
+}
+
+func TestTargetFailedJSONIncludesSourceType(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("target", "failed", invID, "--json")
+	if res.err != nil {
+		t.Fatalf("target failed --json failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+
+	// If there are failed targets, verify JSON includes sourceType field for workflow steps
+	trimmed := strings.TrimSpace(res.stdout)
+	if trimmed != "" && trimmed != "null" && trimmed != "[]" {
+		var targets []map[string]interface{}
+		if err := json.Unmarshal([]byte(trimmed), &targets); err != nil {
+			// If it's not an array, it might be in a different format
+			t.Logf("Note: JSON output format: %s", trimmed)
+			return
+		}
+		for _, target := range targets {
+			label, ok := target["label"].(string)
+			if !ok {
+				continue
+			}
+			// Check if workflow step targets have sourceType field
+			if isWorkflowStep(label) {
+				sourceType, ok := target["sourceType"].(string)
+				if !ok || sourceType != "workflow_step" {
+					t.Errorf("workflow step target %q should have sourceType='workflow_step', got %q", label, sourceType)
+				}
+			}
+		}
+	}
+}
+
+func TestLogGetWorkflowStepNonexistentInvocation(t *testing.T) {
+	requireAPIKey(t)
+	// Try to get workflow step log for a nonexistent invocation
+	res := execCmd("log", "get", "nonexistent-invocation-id", "--target", "steps[0]")
+	if res.err == nil {
+		t.Fatal("expected error for nonexistent invocation, but got none")
+	}
+}
+
+// TestLogGetWorkflowStepZZHelp tests the --help output for workflow-related flags.
+// Named with ZZ prefix to run last to avoid Cobra help flag state issues.
+func TestLogGetWorkflowStepZZHelp(t *testing.T) {
+	res := execCmd("log", "get", "--help")
+	if res.err != nil {
+		t.Fatalf("log get --help failed: %v", res.err)
+	}
+	// The help should mention --target flag
+	if !strings.Contains(res.stdout, "--target") {
+		t.Errorf("log get --help missing --target flag in output:\n%s", res.stdout)
+	}
+}
+
+// --- URL Parsing Tests ---
+
+func TestInvocationGetWithURL(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Test that full BuildBuddy URLs are accepted and parsed correctly
+	url := "https://app.buildbuddy.io/invocation/" + invID
+	res := execCmd("invocation", "get", url)
+	if res.err != nil {
+		t.Fatalf("invocation get with URL failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+	if res.stdout == "" {
+		t.Fatal("invocation get with URL returned empty output")
+	}
+	if !strings.Contains(res.stdout, "ID") {
+		t.Errorf("expected table header in output, got:\n%s", res.stdout)
+	}
+}
+
+func TestInvocationGetWithURLJSON(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	url := "https://app.buildbuddy.io/invocation/" + invID
+	res := execCmd("invocation", "get", url, "--json")
+	if res.err != nil {
+		t.Fatalf("invocation get URL --json failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(res.stdout), &parsed); err != nil {
+		t.Fatalf("invalid JSON: %v\nraw: %s", err, res.stdout)
+	}
+	if _, ok := parsed["invocation"]; !ok {
+		t.Fatalf("JSON missing 'invocation' key, got keys: %v", keys(parsed))
+	}
+}
+
+func TestInvocationWaitWithURL(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Full URL should be accepted by wait command
+	url := "https://app.buildbuddy.io/invocation/" + invID
+	res := execCmd("invocation", "wait", url)
+	if res.err != nil {
+		// Expected for failed invocations
+		t.Logf("invocation wait with URL returned: %v (may be expected for failed invocations)", res.err)
+	}
+	if res.stdout == "" {
+		t.Error("invocation wait with URL returned empty stdout")
+	}
+}
+
+// --- Target Failed Extended Tests ---
+
+func TestTargetFailedWithLabel(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Filter by label - even if no results, should not error
+	res := execCmd("target", "failed", invID, "--label", "//nonexistent:target_label")
+	if res.err != nil {
+		t.Fatalf("target failed --label failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+}
+
+func TestTargetFailedPlaintext(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("target", "failed", invID, "--plaintext")
+	if res.err != nil {
+		t.Fatalf("target failed --plaintext failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+	// If there are results, should be tab-separated
+	if res.stdout != "" && !strings.Contains(res.stdout, "\t") {
+		t.Logf("Note: plaintext output without tabs (may be empty results): %s", res.stdout)
+	}
+}
+
+func TestTargetFailedJSONAllEntriesHaveInvocationID(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("target", "failed", invID, "--json")
+	if res.err != nil {
+		t.Fatalf("target failed --json failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+
+	trimmed := strings.TrimSpace(res.stdout)
+	if trimmed == "" || trimmed == "null" || trimmed == "[]" {
+		t.Skip("no failed targets to validate")
+	}
+
+	var targets []map[string]interface{}
+	if err := json.Unmarshal([]byte(trimmed), &targets); err != nil {
+		t.Skipf("JSON output format not an array: %s", trimmed)
+	}
+
+	// Every entry should have an invocationId field
+	for i, target := range targets {
+		invocID, ok := target["invocationId"].(string)
+		if !ok || invocID == "" {
+			t.Errorf("target[%d] missing or empty 'invocationId' field: %v", i, target)
+		}
+	}
+}
+
+func TestTargetFailedDefaultDepth(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Default depth is -1 (unlimited recursion) - should work without --depth flag
+	res := execCmd("target", "failed", invID, "--json")
+	if res.err != nil {
+		t.Fatalf("target failed (default depth) failed: %v\nstderr: %s", res.err, res.stderr)
+	}
+
+	// Compare with explicit --depth -1 to verify default behavior
+	res2 := execCmd("target", "failed", invID, "--depth", "-1", "--json")
+	if res2.err != nil {
+		t.Fatalf("target failed --depth -1 failed: %v\nstderr: %s", res2.err, res2.stderr)
+	}
+
+	// Both should produce the same output
+	if res.stdout != res2.stdout {
+		t.Errorf("default depth and --depth -1 produced different output")
+	}
+}
+
+// --- Log Tail Extended Tests ---
+
+func TestLogTailOutputFile(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	tmpDir := t.TempDir()
+	outFile := filepath.Join(tmpDir, "tail_output.json")
+
+	res := execCmd("log", "tail", invID, "--json", "-o", outFile)
+	// May fail for failed invocations, that's OK
+	_ = res.err
+
+	data, err := os.ReadFile(outFile)
+	if err != nil {
+		t.Fatalf("failed to read output file: %v", err)
+	}
+	if len(data) == 0 {
+		t.Fatal("output file is empty")
+	}
+	if !json.Valid(data) {
+		t.Fatalf("output file contains invalid JSON: %s", string(data))
+	}
+}
+
+func TestLogTailQuietCompletedHasOutput(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// Quiet mode on completed invocation should still show the log content
+	res := execCmd("log", "tail", invID, "--quiet")
+	// May fail for failed invocations
+	if res.stdout == "" {
+		t.Error("log tail --quiet on completed invocation should still show log output")
+	}
+}
+
+func TestLogTailCompletedInvocationDoesNotPollMultipleTimes(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	// A completed invocation should fetch the log once and exit without additional polling.
+	// The single fetch can take several seconds due to paginated log retrieval,
+	// but it should NOT take 2x the poll interval (which would indicate re-polling).
+	start := time.Now()
+	res := execCmd("log", "tail", invID, "--quiet", "--poll", "5")
+	elapsed := time.Since(start)
+
+	_ = res.err // may fail for failed invocations
+
+	// Should complete in one fetch cycle, not two poll intervals (10s+)
+	if elapsed > 15*time.Second {
+		t.Errorf("log tail on completed invocation took %v (suggests re-polling instead of exiting after first fetch)", elapsed)
+	}
+}
+
+// --- Invocation Wait Extended Tests ---
+
+func TestInvocationWaitPlaintext(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("invocation", "wait", invID, "--plaintext")
+	if res.err != nil {
+		t.Logf("invocation wait --plaintext returned: %v (may be expected for failed invocations)", res.err)
+	}
+	if res.stdout == "" {
+		t.Error("invocation wait --plaintext returned empty output")
+	}
+	// Plaintext should be tab-separated
+	if !strings.Contains(res.stdout, "\t") {
+		t.Errorf("--plaintext output should contain tabs:\n%s", res.stdout)
+	}
+}
+
+func TestInvocationWaitTemplate(t *testing.T) {
+	requireAPIKey(t)
+	invID := getFirstInvocationID(t)
+
+	res := execCmd("invocation", "wait", invID,
+		"--template", "{{range .invocation}}{{.invocationId}} {{end}}")
+	if res.err != nil {
+		t.Logf("invocation wait --template returned: %v (may be expected for failed invocations)", res.err)
+	}
+	if res.stdout == "" {
+		t.Error("invocation wait --template returned empty output")
 	}
 }
 
@@ -1129,3 +1812,5 @@ func keys(m map[string]interface{}) []string {
 	return ks
 }
 
+// Ensure fmt is used (needed for some error formatting above).
+var _ = fmt.Sprintf

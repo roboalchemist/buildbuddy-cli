@@ -115,6 +115,40 @@ func (c *Client) CallAllPages(endpoint string, req PageTokenSetter, resp Paginat
 	return nil
 }
 
+// CallRaw performs a POST request and returns the raw response body as a reader.
+func (c *Client) CallRaw(endpoint string, body interface{}) (io.ReadCloser, error) {
+	url := fmt.Sprintf("%s/api/v1/%s", c.baseURL, endpoint)
+
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	c.debugLog("POST %s (raw)", url)
+
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-buildbuddy-api-key", c.apiKey)
+	req.Header.Set("User-Agent", "buildbuddy-cli/"+version)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("request failed: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		return nil, fmt.Errorf("API request failed with status %d: %s", resp.StatusCode, truncate(string(body), 500))
+	}
+
+	return resp.Body, nil
+}
+
 // version is injected at build time, used in User-Agent.
 var version = "dev"
 
